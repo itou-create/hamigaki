@@ -1,0 +1,1225 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>パパの歯みがき大冒険 🦷✨</title>
+  <style>
+    body { 
+      margin: 0; 
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+      overflow: hidden;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #ui { 
+      position: absolute; 
+      top: 10px; 
+      left: 10px; 
+      right: 10px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(240,240,255,0.95));
+      padding: 15px; 
+      border-radius: 15px; 
+      box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+      line-height: 1.6;
+      max-width: 600px;
+      backdrop-filter: blur(10px);
+      border: 3px solid rgba(255,255,255,0.5);
+      font-size: 14px;
+    }
+    @media (max-width: 600px) {
+      #ui {
+        font-size: 12px;
+        padding: 10px;
+        line-height: 1.4;
+      }
+    }
+    #resetBtn { 
+      margin-top: 10px; 
+      padding: 12px 24px; 
+      border: none; 
+      border-radius: 12px; 
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: #fff; 
+      font-weight: 700; 
+      font-size: 16px;
+      cursor: pointer; 
+      box-shadow: 0 5px 20px rgba(102,126,234,0.5);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    #resetBtn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px rgba(102,126,234,0.6);
+    }
+    #resetBtn:active {
+      transform: translateY(0);
+    }
+    canvas { display: block; }
+    .pill { 
+      display: inline-block; 
+      padding: 4px 12px; 
+      border-radius: 999px; 
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      margin-left: 8px; 
+      font-weight: 700;
+      box-shadow: 0 2px 10px rgba(102,126,234,0.3);
+    }
+    .score-display {
+      font-size: 20px;
+      font-weight: 900;
+      color: #667eea;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+    }
+    @media (max-width: 600px) {
+      .score-display {
+        font-size: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div class="score-display">🎮 スコア: <span id="score" class="pill">0</span></div>
+    <div style="margin-top: 10px;">
+      フェーズ残り時間: <span id="time" class="pill">--</span> 秒 / 
+      平均きれい度: <span id="avg" class="pill">-</span>% / 
+      コンボ: <span id="combo" class="pill">x0</span>
+    </div>
+    <div style="margin-top: 10px; font-size: 14px; color: #555;">
+      <strong>🏔️ 山登り:</strong> 画面長押しで上昇、アイテム取得！<br>
+      <strong>🍱 食事:</strong> 食材をドラッグで口へ！<br>
+      <strong>🦷 歯みがき:</strong> 指でこすって全ての歯を90%以上に！
+    </div>
+    <button id="resetBtn">🔄 リスタート</button>
+  </div>
+  <canvas id="c"></canvas>
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const uiAvg = document.getElementById('avg');
+    const uiTime = document.getElementById('time');
+    const uiCombo = document.getElementById('combo');
+    const uiScore = document.getElementById('score');
+    const resetBtn = document.getElementById('resetBtn');
+
+    let mode = 'climb';
+    let score = 0;
+    let combo = 0;
+    let maxCombo = 0;
+    let particles = [];
+
+    // climb state
+    const climber = { x: 0, y: 0, vy: 0, hasShield: false, speedBoost: false };
+    let climbBaseY = 0;
+    let climbTopY = 0;
+    let mountain = null;
+    let holdUp = false;
+    let rocks = [];
+    let powerups = [];
+    let rockSpawn = 0;
+    let powerupSpawn = 0;
+    const climbTotalTime = 30;
+    let climbTimeLeft = climbTotalTime;
+    let windPhase = 0;
+    let rocksAvoided = 0;
+
+    // eat state
+    const foods = [];
+    let mouthTarget = { x: 0, y: 0 };
+    const eatTotalTime = 30;
+    let eatTimeLeft = eatTotalTime;
+    let draggingFood = null;
+    let dragOffset = { x: 0, y: 0 };
+    let foodCombo = 0;
+
+    // brush game state
+    const teeth = [];
+    const cols = 6;
+    const rows = 2;
+    let layout = null;
+    const brushTotalTime = 50;
+    let brushTimeLeft = brushTotalTime;
+
+    let brushing = false;
+    let lastX = 0, lastY = 0;
+
+    // audio
+    let audioCtx = null;
+
+    resetBtn.addEventListener('click', resetGame);
+
+    function ensureAudio() {
+      if (audioCtx) return;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+
+    function playTone(freq, dur = 0.15, vol = 0.15) {
+      if (!audioCtx) return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.frequency.value = freq;
+      gain.gain.value = vol;
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start();
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+      osc.stop(audioCtx.currentTime + dur + 0.05);
+    }
+
+    function playClick() { playTone(520, 0.1, 0.1); }
+    function playEat() { playTone(440, 0.12, 0.12); }
+    function playBad() { playTone(120, 0.25, 0.15); }
+    function playHit() { playTone(180, 0.12, 0.15); }
+    function playPowerup() { [660, 880].forEach((f, i) => setTimeout(() => playTone(f, 0.1, 0.1), i * 50)); }
+    function playCombo() { playTone(880 + combo * 50, 0.08, 0.1); }
+    function playClear() { [660, 880, 1100].forEach((f, i) => setTimeout(() => playTone(f, 0.12, 0.15), i * 80)); }
+
+    function addScore(points) {
+      score += points * (1 + combo * 0.1);
+      uiScore.textContent = Math.floor(score);
+    }
+
+    function addCombo() {
+      combo++;
+      if (combo > maxCombo) maxCombo = combo;
+      uiCombo.textContent = `x${combo}`;
+      if (combo > 1) playCombo();
+    }
+
+    function resetCombo() {
+      combo = 0;
+      uiCombo.textContent = 'x0';
+    }
+
+    function createParticles(x, y, count, color) {
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 200 + 100;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life: 1,
+          color,
+          size: Math.random() * 4 + 2
+        });
+      }
+    }
+
+    function resetGame() {
+      mode = 'climb';
+      score = 0;
+      combo = 0;
+      maxCombo = 0;
+      setupClimb();
+      brushTimeLeft = brushTotalTime;
+      eatTimeLeft = eatTotalTime;
+      climbTimeLeft = climbTotalTime;
+      draggingFood = null;
+      particles = [];
+      initFoods();
+      initTeeth();
+      brushesOff();
+      uiScore.textContent = '0';
+      uiCombo.textContent = 'x0';
+    }
+
+    function brushesOff() {
+      brushing = false;
+      holdUp = false;
+      draggingFood = null;
+    }
+
+    function resize() {
+      canvas.width = innerWidth;
+      canvas.height = innerHeight;
+      layout = computeLayout();
+      mouthTarget = { x: layout.mouth.x + layout.mouth.w / 2, y: layout.mouth.y + layout.mouth.h * 0.55 };
+      setupClimb();
+      initTeeth();
+      initFoods();
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function setupClimb() {
+      const w = canvas.width;
+      const h = canvas.height;
+      mountain = {
+        peakX: w * 0.5,
+        peakY: h * 0.24,
+        leftX: w * 0.15,
+        rightX: w * 0.85,
+        baseY: h * 0.86
+      };
+      climber.x = w * 0.5;
+      climber.y = mountain.baseY;
+      climber.vy = 0;
+      climber.hasShield = false;
+      climber.speedBoost = false;
+      climbBaseY = mountain.baseY;
+      climbTopY = mountain.peakY + 20;
+      holdUp = false;
+      rocks = [];
+      powerups = [];
+      rockSpawn = 0.5;
+      powerupSpawn = 3;
+      windPhase = 0;
+      rocksAvoided = 0;
+    }
+
+    function computeLayout() {
+      const w = canvas.width;
+      const h = canvas.height;
+      const minDim = Math.min(w, h);
+      const headR = minDim * 0.42;
+      const mouthW = minDim * 0.55;
+      const mouthH = mouthW * 0.35;
+      const centerX = w * 0.5;
+      const centerY = h * 0.55;
+      return {
+        head: { cx: centerX, cy: h * 0.48, rx: headR, ry: headR * 0.92 },
+        mouth: { x: centerX - mouthW / 2, y: centerY - mouthH / 2, w: mouthW, h: mouthH },
+        eyes: {
+          left: { x: w * 0.42, y: h * 0.32 },
+          right: { x: w * 0.58, y: h * 0.32 },
+          r: minDim * 0.018
+        }
+      };
+    }
+
+    function initTeeth() {
+      teeth.length = 0;
+      const padX = layout.mouth.w * 0.08;
+      const padY = layout.mouth.h * 0.10;
+      const slotW = (layout.mouth.w - padX * 2) / cols;
+      const toothW = slotW * 0.9;
+      const toothH = layout.mouth.h * 0.22;
+      const upperY = layout.mouth.y + padY;
+      const lowerY = layout.mouth.y + layout.mouth.h / 2 + padY * 0.6;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const baseX = layout.mouth.x + padX + c * slotW + (slotW - toothW) / 2;
+          const arcOffset = Math.abs(c - (cols - 1) / 2) * 3;
+          const y = (r === 0 ? upperY + arcOffset : lowerY - arcOffset);
+          teeth.push({
+            x: baseX,
+            y,
+            w: toothW,
+            h: toothH,
+            clean: Math.random() * 30,
+            sparkle: 0
+          });
+        }
+      }
+    }
+
+    function initFoods() {
+      foods.length = 0;
+      const plateR = canvas.width * 0.18;
+      const centerX = canvas.width * 0.5;
+      const centerY = canvas.height * 0.82;
+      const pool = [
+        { type: 'onigiri', isFood: true },
+        { type: 'steak', isFood: true },
+        { type: 'pork', isFood: true },
+        { type: 'salmon', isFood: true },
+        { type: 'carrot', isFood: true },
+        { type: 'broccoli', isFood: true },
+        { type: 'sausage', isFood: true },
+        { type: 'onigiri', isFood: true },
+        { type: 'rock', isFood: false },
+        { type: 'eraser', isFood: false },
+      ];
+      const items = shuffle(pool).slice(0, 10);
+      items.forEach((item, i) => {
+        const angle = (i / items.length) * Math.PI * 2;
+        const r = plateR * 0.7;
+        const x = centerX + Math.cos(angle) * r;
+        const y = centerY + Math.sin(angle) * r * 0.4;
+        foods.push({
+          x, y,
+          startX: x,
+          startY: y,
+          targetX: mouthTarget.x,
+          targetY: mouthTarget.y,
+          eaten: false,
+          done: false,
+          t: 0,
+          type: item.type,
+          isFood: item.isFood,
+          badFlash: 0,
+          bounce: Math.random() * Math.PI * 2
+        });
+      });
+      foodCombo = 0;
+    }
+
+    function shuffle(arr) {
+      const a = [...arr];
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    function startEatPhase() {
+      mode = 'eat';
+      holdUp = false;
+      brushing = false;
+      eatTimeLeft = eatTotalTime;
+      initFoods();
+      playTone(740, 0.15, 0.15);
+      addScore(100 + rocksAvoided * 10);
+    }
+
+    function startBrushPhase() {
+      mode = 'playing';
+      brushTimeLeft = brushTotalTime;
+      brushing = false;
+      playTone(620, 0.12, 0.15);
+      addScore(50);
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+      ensureAudio();
+      playClick();
+      setPos(e);
+      if (mode === 'climb') {
+        holdUp = true;
+      } else if (mode === 'eat') {
+        const target = findFoodAt(lastX, lastY);
+        if (target) {
+          draggingFood = target;
+          dragOffset.x = target.x - lastX;
+          dragOffset.y = target.y - lastY;
+        }
+      } else if (mode === 'playing') {
+        brushing = true;
+      }
+    });
+    canvas.addEventListener('mouseup', () => {
+      if (mode === 'eat' && draggingFood) {
+        dropFood();
+      }
+      draggingFood = null;
+      brushing = false;
+      holdUp = false;
+    });
+    canvas.addEventListener('mouseleave', () => {
+      draggingFood = null;
+      brushing = false;
+      holdUp = false;
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      setPos(e);
+      if (mode === 'eat' && draggingFood) {
+        draggingFood.x = lastX + dragOffset.x;
+        draggingFood.y = lastY + dragOffset.y;
+      }
+    });
+
+    // タッチイベント対応
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      ensureAudio();
+      playClick();
+      setPosTouch(e);
+      if (mode === 'climb') {
+        holdUp = true;
+      } else if (mode === 'eat') {
+        const target = findFoodAt(lastX, lastY);
+        if (target) {
+          draggingFood = target;
+          dragOffset.x = target.x - lastX;
+          dragOffset.y = target.y - lastY;
+        }
+      } else if (mode === 'playing') {
+        brushing = true;
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      if (mode === 'eat' && draggingFood) {
+        dropFood();
+      }
+      draggingFood = null;
+      brushing = false;
+      holdUp = false;
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      setPosTouch(e);
+      if (mode === 'eat' && draggingFood) {
+        draggingFood.x = lastX + dragOffset.x;
+        draggingFood.y = lastY + dragOffset.y;
+      }
+    }, { passive: false });
+
+    function setPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      lastX = e.clientX - rect.left;
+      lastY = e.clientY - rect.top;
+    }
+
+    function setPosTouch(e) {
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches[0] || e.changedTouches[0];
+      if (touch) {
+        lastX = touch.clientX - rect.left;
+        lastY = touch.clientY - rect.top;
+      }
+    }
+
+    function findFoodAt(x, y) {
+      for (let i = foods.length - 1; i >= 0; i--) {
+        const f = foods[i];
+        if (f.done || f.eaten) continue;
+        const dx = x - f.x;
+        const dy = y - f.y;
+        if (dx * dx + dy * dy < 40 * 40) return f;
+      }
+      return null;
+    }
+
+    function dropFood() {
+      const f = draggingFood;
+      draggingFood = null;
+      const dx = f.x - mouthTarget.x;
+      const dy = f.y - mouthTarget.y;
+      const nearMouth = dx * dx + dy * dy < 130 * 130;
+      if (!nearMouth) {
+        f.x = f.startX;
+        f.y = f.startY;
+        return;
+      }
+      if (!f.isFood) {
+        eatTimeLeft = Math.max(0, eatTimeLeft - 5);
+        f.badFlash = 1;
+        playBad();
+        f.x = f.startX;
+        f.y = f.startY;
+        resetCombo();
+        createParticles(f.x, f.y, 15, '#ff4444');
+        return;
+      }
+      f.eaten = true;
+      f.t = 0;
+      playEat();
+      foodCombo++;
+      addCombo();
+      addScore(20 + foodCombo * 5);
+      createParticles(f.x, f.y, 20, '#44ff44');
+    }
+
+    function updateParticles(dt) {
+      particles = particles.filter(p => {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += 400 * dt;
+        p.life -= dt * 2;
+        return p.life > 0;
+      });
+    }
+
+    function drawParticles() {
+      particles.forEach(p => {
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    function update(dt) {
+      updateParticles(dt);
+
+      if (mode === 'climb') {
+        climbTimeLeft = Math.max(0, climbTimeLeft - dt);
+        rockSpawn -= dt;
+        powerupSpawn -= dt;
+        windPhase += dt * 0.7;
+        const wind = Math.sin(windPhase) * 60;
+
+        if (rockSpawn <= 0) {
+          const rx = mountain.leftX + Math.random() * (mountain.rightX - mountain.leftX);
+          rocks.push({ x: rx, y: mountain.peakY - 40, vy: 220 + Math.random() * 100, r: 12 + Math.random() * 6 });
+          rockSpawn = 0.5 + Math.random() * 0.4;
+        }
+
+        if (powerupSpawn <= 0) {
+          const px = mountain.leftX + Math.random() * (mountain.rightX - mountain.leftX);
+          const type = Math.random() < 0.5 ? 'shield' : 'speed';
+          powerups.push({ x: px, y: mountain.peakY - 40, type, float: Math.random() * Math.PI * 2 });
+          powerupSpawn = 4 + Math.random() * 3;
+        }
+
+        rocks = rocks.filter(r => {
+          r.y += r.vy * dt;
+          r.x += Math.sin(r.y * 0.02) * 12 * dt;
+          return r.y < climbBaseY + 50;
+        });
+
+        powerups = powerups.filter(p => {
+          p.float += dt * 3;
+          p.y += 80 * dt;
+          return p.y < climbBaseY + 50;
+        });
+
+        const upForce = holdUp ? (climber.speedBoost ? -700 : -520) : 0;
+        const gravity = 400;
+        climber.vy += (upForce + gravity) * dt;
+        climber.y += climber.vy * dt;
+        
+        // タッチ/マウス位置に向かって移動（山の範囲内）
+        if (holdUp || brushing) {
+          const targetX = Math.min(Math.max(lastX + wind, mountain.leftX), mountain.rightX);
+          climber.x += (targetX - climber.x) * 0.18;
+        } else {
+          const targetX = Math.min(Math.max(climber.x + wind * dt * 2, mountain.leftX), mountain.rightX);
+          climber.x = targetX;
+        }
+        
+        if (climber.y > climbBaseY) { climber.y = climbBaseY; climber.vy = 0; }
+        if (climber.y <= climbTopY) {
+          startEatPhase();
+        }
+
+        for (const p of powerups) {
+          const dx = climber.x - p.x;
+          const dy = (climber.y - 18) - p.y;
+          if (dx * dx + dy * dy < 900) {
+            if (p.type === 'shield') {
+              climber.hasShield = true;
+              setTimeout(() => climber.hasShield = false, 5000);
+            } else {
+              climber.speedBoost = true;
+              setTimeout(() => climber.speedBoost = false, 4000);
+            }
+            playPowerup();
+            addScore(30);
+            addCombo();
+            createParticles(p.x, p.y, 25, p.type === 'shield' ? '#44aaff' : '#ffaa44');
+            powerups.splice(powerups.indexOf(p), 1);
+            break;
+          }
+        }
+
+        for (const r of rocks) {
+          const dx = climber.x - r.x;
+          const dy = (climber.y - 18) - r.y;
+          if (dx * dx + dy * dy < (r.r + 14) * (r.r + 14)) {
+            if (climber.hasShield) {
+              climber.hasShield = false;
+              createParticles(r.x, r.y, 30, '#44aaff');
+              rocks.splice(rocks.indexOf(r), 1);
+            } else {
+              climber.y = Math.min(climbBaseY, climber.y + 100);
+              climber.vy = 120;
+              holdUp = false;
+              playHit();
+              resetCombo();
+              createParticles(climber.x, climber.y - 18, 20, '#ff4444');
+            }
+            break;
+          } else if (r.y > climber.y) {
+            if (!r.counted) {
+              r.counted = true;
+              rocksAvoided++;
+              addScore(5);
+            }
+          }
+        }
+
+        if (climbTimeLeft <= 0) {
+          mode = 'timeoutClimb';
+        }
+        return;
+      }
+
+      if (mode === 'eat') {
+        eatTimeLeft = Math.max(0, eatTimeLeft - dt);
+        foods.forEach(f => {
+          f.bounce += dt * 3;
+          if (f.badFlash > 0) f.badFlash = Math.max(0, f.badFlash - dt * 2);
+          if (!f.eaten || f.done) return;
+          f.t += dt;
+          const p = Math.min(1, f.t / 0.8);
+          const ease = p * p * (3 - 2 * p);
+          f.x = f.startX + (f.targetX - f.startX) * ease;
+          f.y = f.startY + (f.targetY - f.startY) * ease - Math.sin(p * Math.PI) * 30;
+          if (p >= 1) {
+            f.done = true;
+          }
+        });
+        const allFoodsEaten = foods.filter(f => f.isFood).every(f => f.done);
+        if (allFoodsEaten) {
+          startBrushPhase();
+        } else if (eatTimeLeft <= 0) {
+          mode = 'timeoutEat';
+        }
+        return;
+      }
+
+      if (mode !== 'playing') return;
+      brushTimeLeft = Math.max(0, brushTimeLeft - dt);
+
+      if (brushing) {
+        const radius = 35;
+        teeth.forEach(t => {
+          const cx = Math.max(t.x, Math.min(lastX, t.x + t.w));
+          const cy = Math.max(t.y, Math.min(lastY, t.y + t.h));
+          const dx = lastX - cx, dy = lastY - cy;
+          const dist2 = dx * dx + dy * dy;
+          if (dist2 < radius * radius) {
+            const strength = Math.max(0, 1 - Math.sqrt(dist2) / radius);
+            const before = t.clean;
+            t.clean = Math.min(100, t.clean + strength * dt * 0.4 * 100);
+            if (before < 100 && t.clean >= 100) {
+              t.sparkle = 1;
+              addScore(10);
+              addCombo();
+              createParticles(t.x + t.w / 2, t.y + t.h / 2, 15, '#ffffff');
+            }
+          }
+        });
+      }
+
+      teeth.forEach(t => {
+        if (t.sparkle > 0) t.sparkle = Math.max(0, t.sparkle - dt * 2);
+      });
+
+      if (brushTimeLeft <= 0) {
+        mode = 'timeoutBrush';
+      }
+    }
+
+    function drawClimb() {
+      const w = canvas.width, h = canvas.height;
+      const sky = ctx.createLinearGradient(0, 0, 0, h);
+      sky.addColorStop(0, '#87CEEB');
+      sky.addColorStop(1, '#B0E0E6');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.fillStyle = '#6B8E23';
+      ctx.beginPath();
+      ctx.moveTo(mountain.leftX, mountain.baseY);
+      ctx.lineTo(mountain.peakX, mountain.peakY);
+      ctx.lineTo(mountain.rightX, mountain.baseY);
+      ctx.closePath();
+      ctx.fill();
+
+      const grad = ctx.createLinearGradient(mountain.peakX, mountain.peakY, mountain.peakX, mountain.baseY);
+      grad.addColorStop(0, '#8FBC8F');
+      grad.addColorStop(1, '#556B2F');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(mountain.leftX + 30, mountain.baseY);
+      ctx.lineTo(mountain.peakX, mountain.peakY + 30);
+      ctx.lineTo(mountain.peakX + 15, mountain.baseY);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = '#D2691E';
+      ctx.fillRect(mountain.peakX - 4, mountain.peakY - 80, 8, 80);
+      const flag = ctx.createLinearGradient(mountain.peakX, mountain.peakY - 80, mountain.peakX + 80, mountain.peakY - 80);
+      flag.addColorStop(0, '#FF6B6B');
+      flag.addColorStop(1, '#FF4444');
+      ctx.fillStyle = flag;
+      ctx.beginPath();
+      ctx.moveTo(mountain.peakX + 4, mountain.peakY - 75);
+      ctx.lineTo(mountain.peakX + 85, mountain.peakY - 55);
+      ctx.lineTo(mountain.peakX + 4, mountain.peakY - 35);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.3)';
+      ctx.shadowBlur = 10;
+      ctx.fillStyle = '#4a4a4a';
+      rocks.forEach(r => {
+        ctx.beginPath();
+        ctx.ellipse(r.x, r.y, r.r, r.r * 0.8, 0, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.restore();
+
+      powerups.forEach(p => {
+        const y = p.y + Math.sin(p.float) * 5;
+        ctx.save();
+        ctx.translate(p.x, y);
+        ctx.shadowColor = p.type === 'shield' ? '#44aaff' : '#ffaa44';
+        ctx.shadowBlur = 15;
+        if (p.type === 'shield') {
+          ctx.fillStyle = '#44aaff';
+          ctx.beginPath();
+          ctx.arc(0, 0, 18, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 20px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('🛡️', 0, 0);
+        } else {
+          ctx.fillStyle = '#ffaa44';
+          ctx.beginPath();
+          ctx.moveTo(0, -18);
+          ctx.lineTo(12, 0);
+          ctx.lineTo(0, 18);
+          ctx.lineTo(-12, 0);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 16px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('⚡', 0, 0);
+        }
+        ctx.restore();
+      });
+
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.3)';
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = '#8B4513';
+      ctx.beginPath();
+      ctx.arc(climber.x, climber.y - 18, 16, 0, Math.PI * 2);
+      ctx.fill();
+      
+      if (climber.hasShield) {
+        ctx.strokeStyle = '#44aaff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(climber.x, climber.y - 18, 24, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (climber.speedBoost) {
+        ctx.fillStyle = 'rgba(255,170,68,0.3)';
+        ctx.beginPath();
+        ctx.arc(climber.x, climber.y - 18, 22, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = '#4169E1';
+      ctx.fillRect(climber.x - 12, climber.y - 8, 24, 32);
+      ctx.fillStyle = '#FFE4C4';
+      ctx.beginPath();
+      ctx.arc(climber.x, climber.y - 28, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      drawParticles();
+
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = 'rgba(0,0,0,0.5)';
+      ctx.shadowBlur = 5;
+      ctx.fillText('🏔️ 画面長押しで山頂を目指せ！', w / 2, h * 0.92);
+      ctx.font = '16px sans-serif';
+      ctx.fillText(`残り: ${Math.ceil(climbTimeLeft)}秒 | 回避: ${rocksAvoided}回`, w / 2, h * 0.96);
+    }
+
+    function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+
+    function drawFaceBase(mood = 0) {
+      const { head, mouth, eyes } = layout;
+      const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      grad.addColorStop(0, '#E6F3FF');
+      grad.addColorStop(1, '#FFF8E7');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.2)';
+      ctx.shadowBlur = 20;
+      ctx.shadowOffsetY = 10;
+      ctx.fillStyle = '#FFD7BA';
+      ctx.beginPath();
+      ctx.ellipse(head.cx, head.cy, head.rx, head.ry, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      ctx.fillStyle = '#2b1b15';
+      ctx.beginPath();
+      ctx.ellipse(head.cx, head.cy - head.ry * 0.5, head.rx * 0.98, head.ry * 0.6, 0, Math.PI, 0, true);
+      ctx.fill();
+
+      const squint = clamp01(mood);
+      ctx.fillStyle = '#fff';
+      [eyes.left, eyes.right].forEach(e => {
+        ctx.beginPath();
+        ctx.ellipse(e.x, e.y, head.rx * 0.13, head.ry * (0.11 - 0.04 * squint), 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#222';
+        ctx.beginPath();
+        ctx.ellipse(e.x, e.y, eyes.r * 1.2, eyes.r * 1.2 * (1 - 0.5 * squint), 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(e.x + eyes.r * 0.4, e.y - eyes.r * 0.2, eyes.r * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      if (mood > 0.3) {
+        ctx.fillStyle = `rgba(255, 182, 193, ${0.3 + 0.4 * mood})`;
+        ctx.beginPath();
+        ctx.ellipse(head.cx - head.rx * 0.3, head.cy + head.ry * 0.08, head.rx * 0.15, head.ry * 0.09, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(head.cx + head.rx * 0.3, head.cy + head.ry * 0.08, head.rx * 0.15, head.ry * 0.09, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawMouth(openRatio = 1, mood = 0) {
+      const { mouth } = layout;
+      ctx.save();
+      ctx.translate(mouth.x + mouth.w / 2, mouth.y + mouth.h / 2);
+      ctx.fillStyle = '#2b0c0c';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, mouth.w / 2, mouth.h / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      const innerGrad = ctx.createRadialGradient(0, mouth.h * 0.2, 0, 0, 0, mouth.w / 2);
+      innerGrad.addColorStop(0, '#FF6B9D');
+      innerGrad.addColorStop(1, '#c95a62');
+      ctx.fillStyle = innerGrad;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, mouth.w * 0.45, mouth.h * 0.42, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawFood(f) {
+      ctx.save();
+      const bounce = Math.sin(f.bounce) * 3;
+      ctx.translate(f.x, f.y + bounce);
+      
+      const flash = f.badFlash;
+      if (flash > 0) {
+        ctx.strokeStyle = `rgba(255,70,70,${flash})`;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(0, 0, 35, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.shadowColor = 'rgba(0,0,0,0.3)';
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetY = 5;
+
+      switch (f.type) {
+        case 'onigiri':
+          const onigiriGrad = ctx.createLinearGradient(-20, -20, 20, 20);
+          onigiriGrad.addColorStop(0, '#FFFFFF');
+          onigiriGrad.addColorStop(1, '#F5F5F5');
+          ctx.fillStyle = onigiriGrad;
+          ctx.beginPath();
+          ctx.moveTo(0, -28);
+          ctx.lineTo(26, 18);
+          ctx.lineTo(-26, 18);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = '#2e2e2e';
+          ctx.fillRect(-16, 6, 32, 20);
+          break;
+        case 'steak':
+          const steakGrad = ctx.createRadialGradient(0, 0, 5, 0, 0, 30);
+          steakGrad.addColorStop(0, '#A52A2A');
+          steakGrad.addColorStop(1, '#8B0000');
+          ctx.fillStyle = steakGrad;
+          ctx.beginPath();
+          ctx.roundRect(-30, -20, 60, 40, 12);
+          ctx.fill();
+          break;
+        case 'pork':
+          ctx.fillStyle = '#FFB6C1';
+          ctx.beginPath();
+          ctx.roundRect(-34, -18, 68, 36, 10);
+          ctx.fill();
+          ctx.fillStyle = '#FFF';
+          ctx.fillRect(-34, -5, 68, 12);
+          break;
+        case 'salmon':
+          ctx.fillStyle = '#FA8072';
+          ctx.beginPath();
+          ctx.roundRect(-32, -16, 64, 32, 12);
+          ctx.fill();
+          break;
+        case 'carrot':
+          ctx.fillStyle = '#FF8C00';
+          ctx.beginPath();
+          ctx.moveTo(-18, -20);
+          ctx.lineTo(24, 0);
+          ctx.lineTo(-18, 20);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = '#228B22';
+          ctx.fillRect(-20, -5, 12, 10);
+          break;
+        case 'broccoli':
+          ctx.fillStyle = '#32CD32';
+          for (let i = 0; i < 3; i++) {
+            const x = (i - 1) * 14;
+            ctx.beginPath();
+            ctx.arc(x, -5, 12, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.fillRect(-5, 5, 10, 18);
+          break;
+        case 'sausage':
+          ctx.fillStyle = '#D2691E';
+          ctx.beginPath();
+          ctx.roundRect(-28, -14, 56, 28, 14);
+          ctx.fill();
+          break;
+        case 'rock':
+          ctx.fillStyle = '#696969';
+          ctx.beginPath();
+          ctx.ellipse(0, 0, 24, 20, 0, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        case 'eraser':
+          ctx.fillStyle = '#FFB6C1';
+          ctx.beginPath();
+          ctx.roundRect(-20, -12, 40, 24, 5);
+          ctx.fill();
+          ctx.fillStyle = '#4682B4';
+          ctx.fillRect(-20, -12, 15, 24);
+          break;
+      }
+      ctx.restore();
+    }
+
+    function drawEat() {
+      const w = canvas.width, h = canvas.height;
+      drawFaceBase();
+      drawMouth(1.2);
+
+      const plateGrad = ctx.createRadialGradient(w * 0.5, h * 0.82, 0, w * 0.5, h * 0.82, w * 0.25);
+      plateGrad.addColorStop(0, '#FFFFFF');
+      plateGrad.addColorStop(1, '#E0E0E0');
+      ctx.fillStyle = plateGrad;
+      ctx.beginPath();
+      ctx.ellipse(w * 0.5, h * 0.82, w * 0.24, w * 0.08, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      foods.forEach(f => {
+        if (f.done) return;
+        drawFood(f);
+      });
+
+      drawParticles();
+
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = 'rgba(0,0,0,0.5)';
+      ctx.shadowBlur = 5;
+      ctx.fillText('🍱 食材を口へドラッグ！', w / 2, h * 0.18);
+      ctx.font = '16px sans-serif';
+      ctx.fillText(`残り: ${Math.ceil(eatTimeLeft)}秒 | 食べた: ${foodCombo}個`, w / 2, h * 0.22);
+    }
+
+    function drawFace(mood = 0) {
+      drawFaceBase(mood);
+      drawMouth(1.0 + mood * 0.15, mood);
+    }
+
+    function drawTooth(t) {
+      ctx.save();
+      ctx.translate(t.x + t.w / 2, t.y + t.h / 2);
+      
+      if (t.sparkle > 0) {
+        ctx.save();
+        ctx.shadowColor = '#FFD700';
+        ctx.shadowBlur = 20 * t.sparkle;
+        ctx.strokeStyle = `rgba(255, 215, 0, ${t.sparkle})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, t.w * 0.6, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      const toothGrad = ctx.createLinearGradient(-t.w / 2, -t.h / 2, t.w / 2, t.h / 2);
+      toothGrad.addColorStop(0, '#FFFFFF');
+      toothGrad.addColorStop(1, '#F0F0F0');
+      ctx.fillStyle = toothGrad;
+      ctx.beginPath();
+      ctx.roundRect(-t.w / 2, -t.h / 2, t.w, t.h, 12);
+      ctx.fill();
+
+      const dirt = 100 - t.clean;
+      if (dirt > 0) {
+        ctx.fillStyle = `rgba(139, 90, 43, ${Math.min(0.7, dirt / 100)})`;
+        ctx.fillRect(-t.w / 2, -t.h / 2, t.w, t.h);
+      }
+
+      ctx.fillStyle = t.clean >= 90 ? '#228B22' : '#333';
+      ctx.font = `bold ${Math.max(14, t.h * 0.3)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`${t.clean.toFixed(0)}%`, 0, 0);
+      ctx.restore();
+    }
+
+    function drawBrush() {
+      const isMobile = canvas.width < 600;
+      const handleLen = isMobile ? 70 : 90;
+      const bristleW = isMobile ? 32 : 40;
+      const bristleH = isMobile ? 18 : 24;
+      
+      ctx.save();
+      ctx.translate(lastX, lastY);
+      ctx.rotate(-Math.PI / 4);
+      
+      ctx.shadowColor = 'rgba(0,0,0,0.3)';
+      ctx.shadowBlur = 10;
+      
+      const handleGrad = ctx.createLinearGradient(-handleLen, 0, 0, 0);
+      handleGrad.addColorStop(0, '#4169E1');
+      handleGrad.addColorStop(1, '#1E90FF');
+      ctx.fillStyle = handleGrad;
+      ctx.fillRect(-handleLen, -8, handleLen, 16);
+      
+      ctx.fillStyle = '#E0E0E0';
+      ctx.fillRect(0, -bristleH / 2, bristleW, bristleH);
+      
+      if (brushing) {
+        for (let i = 0; i < 5; i++) {
+          ctx.fillStyle = `rgba(255,255,255,${0.6 - i * 0.1})`;
+          ctx.beginPath();
+          ctx.arc(bristleW / 2, 0, 15 + i * 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+
+    function drawProgressBar(x, y, w, h, progress, label) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.fillRect(x, y, w, h);
+      
+      const grad = ctx.createLinearGradient(x, y, x + w, y);
+      grad.addColorStop(0, '#4CAF50');
+      grad.addColorStop(1, '#8BC34A');
+      ctx.fillStyle = grad;
+      ctx.fillRect(x, y, w * progress, h);
+      
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x, y, w, h);
+      
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, x + w / 2, y + h / 2);
+      ctx.restore();
+    }
+
+    function drawOverlay(text, sub, stars = 0) {
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      const isMobile = canvas.width < 600;
+      
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `bold ${isMobile ? 40 : 64}px sans-serif`;
+      ctx.shadowColor = 'rgba(0,0,0,0.5)';
+      ctx.shadowBlur = 10;
+      ctx.fillText(text, canvas.width / 2, canvas.height / 2 - 60);
+      
+      ctx.font = `${isMobile ? 18 : 28}px sans-serif`;
+      ctx.fillText(sub, canvas.width / 2, canvas.height / 2);
+      
+      if (stars > 0) {
+        ctx.font = `${isMobile ? 50 : 72}px sans-serif`;
+        const starText = '⭐'.repeat(stars);
+        ctx.fillText(starText, canvas.width / 2, canvas.height / 2 + 60);
+      }
+      
+      ctx.font = `${isMobile ? 16 : 24}px sans-serif`;
+      ctx.fillText(`最終スコア: ${Math.floor(score)} | 最大コンボ: x${maxCombo}`, canvas.width / 2, canvas.height / 2 + 130);
+    }
+
+    let last = performance.now();
+    function loop(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      update(dt);
+
+      if (mode === 'climb') {
+        drawClimb();
+        uiAvg.textContent = '-';
+        uiTime.textContent = Math.ceil(climbTimeLeft);
+        requestAnimationFrame(loop);
+        return;
+      }
+
+      if (mode === 'eat') {
+        drawEat();
+        uiAvg.textContent = '-';
+        uiTime.textContent = Math.ceil(eatTimeLeft);
+        requestAnimationFrame(loop);
+        return;
+      }
+
+      const avg = teeth.reduce((a, t) => a + t.clean, 0) / teeth.length;
+      const mood = clamp01(avg / 100);
+      drawFace(mood);
+      teeth.forEach(drawTooth);
+      drawBrush();
+      drawParticles();
+
+      const progress = avg / 100;
+      const barWidth = canvas.width < 600 ? canvas.width * 0.7 : canvas.width * 0.5;
+      const barX = (canvas.width - barWidth) / 2;
+      drawProgressBar(barX, canvas.height * 0.88, barWidth, 30, progress, `きれい度: ${avg.toFixed(0)}%`);
+
+      uiAvg.textContent = avg.toFixed(0);
+      uiTime.textContent = Math.ceil(brushTimeLeft);
+
+      if (mode === 'playing' && avg >= 90) {
+        mode = 'cleared';
+        const timeBonus = Math.floor(brushTimeLeft * 10);
+        const comboBonus = maxCombo * 50;
+        addScore(timeBonus + comboBonus);
+        playClear();
+        createParticles(canvas.width / 2, canvas.height / 2, 100, '#FFD700');
+      }
+
+      if (mode === 'cleared') {
+        let stars = 1;
+        if (score > 800) stars = 3;
+        else if (score > 500) stars = 2;
+        drawOverlay('🎉 完璧！ 🎉', 'パパの歯はピカピカ！', stars);
+      } else if (mode === 'timeoutClimb') {
+        drawOverlay('⏰ タイムアップ', '山登りで時間切れ...もう一度挑戦！');
+      } else if (mode === 'timeoutEat') {
+        drawOverlay('⏰ タイムアップ', '食事で時間切れ...もう一度挑戦！');
+      } else if (mode === 'timeoutBrush') {
+        const stars = avg >= 70 ? 1 : 0;
+        drawOverlay('⏰ タイムアップ', `きれい度: ${avg.toFixed(0)}% でフィニッシュ`, stars);
+      }
+
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
